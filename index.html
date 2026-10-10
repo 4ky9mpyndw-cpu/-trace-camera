@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="el">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#171717">
+<title>Trace — Ζωγράφισε με οδηγό</title>
+<style>
+  :root { color-scheme: dark; --bg:#171717; --panel:#242424; --accent:#f0c46a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:#fff; }
+  header { padding:14px 16px 10px; text-align:center; }
+  h1 { font-size:21px; margin:0 0 4px; }
+  header p { color:#c8c8c8; font-size:13px; margin:0; }
+  .stage { position:relative; height: min(62vh, 620px); min-height:320px; margin:0 10px; background:#080808; border-radius:16px; overflow:hidden; border:1px solid #444; touch-action:none; }
+  #camera { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+  #placeholder { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:24px; color:#bbb; line-height:1.5; }
+  #overlay { position:absolute; width:68%; height:auto; max-height:85%; object-fit:contain; left:16%; top:8%; opacity:.55; display:none; touch-action:none; user-select:none; -webkit-user-drag:none; }
+  .badge { position:absolute; left:10px; top:10px; padding:6px 9px; border-radius:8px; background:#0009; font-size:12px; color:#fff; pointer-events:none; }
+  .controls { padding:12px 14px 24px; display:grid; gap:10px; }
+  .row { display:flex; gap:8px; }
+  button, .filebutton { font:inherit; border:0; border-radius:12px; padding:12px 10px; background:var(--panel); color:#fff; text-align:center; cursor:pointer; }
+  button.primary, .filebutton { background:var(--accent); color:#171717; font-weight:700; }
+  button { flex:1; }
+  .filebutton { display:block; flex:1; }
+  input[type=file] { display:none; }
+  .sliderbox { background:var(--panel); border-radius:12px; padding:10px 12px; }
+  .sliderline { display:flex; justify-content:space-between; font-size:13px; margin-bottom:7px; color:#eee; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .hint { font-size:12px; color:#bdbdbd; line-height:1.45; margin:0 2px; }
+  .error { display:none; background:#5a2424; padding:10px; border-radius:10px; font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Trace ✏️</h1>
+  <p>Βάλε την εικόνα πάνω στην κάμερα και αντέγραψέ την στο χαρτί.</p>
+</header>
+
+<main>
+  <section class="stage" id="stage" aria-label="Προεπισκόπηση κάμερας και εικόνας">
+    <video id="camera" autoplay playsinline muted></video>
+    <div id="placeholder">1. Πάτησε «Άνοιγμα κάμερας»<br>2. Διάλεξε την εικόνα σου</div>
+    <img id="overlay" alt="Εικόνα για αντιγραφή">
+    <div class="badge" id="status">Η κάμερα δεν έχει ανοίξει</div>
+  </section>
+
+  <section class="controls">
+    <div class="row">
+      <button class="primary" id="startCamera">📷 Άνοιγμα κάμερας</button>
+      <label class="filebutton">🖼️ Επιλογή εικόνας<input id="imagePicker" type="file" accept="image/*"></label>
+    </div>
+    <div class="sliderbox">
+      <div class="sliderline"><label for="opacity">Διαφάνεια εικόνας</label><span id="opacityValue">55%</span></div>
+      <input id="opacity" type="range" min="5" max="100" value="55">
+    </div>
+    <div class="sliderbox">
+      <div class="sliderline"><label for="size">Μέγεθος εικόνας</label><span id="sizeValue">68%</span></div>
+      <input id="size" type="range" min="15" max="100" value="68">
+    </div>
+    <div class="row">
+      <button id="smaller">− Μικρότερη</button>
+      <button id="bigger">＋ Μεγαλύτερη</button>
+      <button id="reset">↺ Επαναφορά</button>
+    </div>
+    <div class="row">
+      <button id="flip">↔ Καθρέφτισμα</button>
+      <button id="stopCamera">■ Κλείσιμο κάμερας</button>
+    </div>
+    <p class="hint">Μετακίνησε την εικόνα σύροντάς την με ένα δάχτυλο. Για να τη μετακινήσεις, σύρε την ίδια την εικόνα. Η εικόνα και η κάμερα εμφανίζονται μόνο σε αυτή τη συσκευή· δεν ανεβαίνουν από την εφαρμογή σε κάποιον διακομιστή.</p>
+    <div class="error" id="error"></div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const video = document.getElementById('camera');
+  const overlay = document.getElementById('overlay');
+  const placeholder = document.getElementById('placeholder');
+  const status = document.getElementById('status');
+  const errorBox = document.getElementById('error');
+  const stage = document.getElementById('stage');
+  const opacity = document.getElementById('opacity');
+  const size = document.getElementById('size');
+  let stream = null, flipped = false, dragging = false, startX = 0, startY = 0, origLeft = 0, origTop = 0;
+
+  function showError(message) {
+    errorBox.textContent = message;
+    errorBox.style.display = 'block';
+  }
+  function hideError() { errorBox.style.display = 'none'; }
+
+  async function startCamera() {
+    hideError();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showError('Η κάμερα χρειάζεται ασφαλή σύνδεση HTTPS. Άνοιξε τη δημοσιευμένη σελίδα της εφαρμογής μέσα από το Safari.');
+      return;
+    }
+    try {
+      if (stream) stream.getTracks().forEach(track => track.stop());
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' } }
+      });
+      video.srcObject = stream;
+      await video.play();
+      placeholder.style.display = 'none';
+      status.textContent = 'Κάμερα ενεργή';
+    } catch (e) {
+      showError('Δεν άνοιξε η κάμερα. Έλεγξε ότι το Safari έχει άδεια πρόσβασης στην κάμερα και πάτησε ξανά. (' + (e.name || 'σφάλμα') + ')');
+    }
+  }
+  function stopCamera() {
+    if (stream) stream.getTracks().forEach(track => track.stop());
+    stream = null;
+    video.srcObject = null;
+    status.textContent = 'Η κάμερα δεν έχει ανοίξει';
+    placeholder.style.display = 'flex';
+  }
+
+  document.getElementById('startCamera').addEventListener('click', startCamera);
+  document.getElementById('stopCamera').addEventListener('click', stopCamera);
+
+  document.getElementById('imagePicker').addEventListener('change', event => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      overlay.src = reader.result;
+      overlay.style.display = 'block';
+      overlay.style.left = '16%';
+      overlay.style.top = '8%';
+      size.value = 68;
+      size.dispatchEvent(new Event('input'));
+      status.textContent = stream ? 'Κάμερα + εικόνα έτοιμες' : 'Εικόνα έτοιμη — άνοιξε την κάμερα';
+    };
+    reader.readAsDataURL(file);
+  });
+
+  opacity.addEventListener('input', () => {
+    overlay.style.opacity = Number(opacity.value) / 100;
+    document.getElementById('opacityValue').textContent = opacity.value + '%';
+  });
+  size.addEventListener('input', () => {
+    const percent = Number(size.value);
+    overlay.style.width = percent + '%';
+    const left = parseFloat(overlay.style.left) || 0;
+    if (left + percent > 100) overlay.style.left = Math.max(0, 100 - percent) + '%';
+    document.getElementById('sizeValue').textContent = percent + '%';
+  });
+  document.getElementById('smaller').addEventListener('click', () => {
+    size.value = Math.max(15, Number(size.value) - 5); size.dispatchEvent(new Event('input'));
+  });
+  document.getElementById('bigger').addEventListener('click', () => {
+    size.value = Math.min(100, Number(size.value) + 5); size.dispatchEvent(new Event('input'));
+  });
+  document.getElementById('reset').addEventListener('click', () => {
+    overlay.style.left = '16%'; overlay.style.top = '8%';
+    opacity.value = 55; opacity.dispatchEvent(new Event('input'));
+    size.value = 68; size.dispatchEvent(new Event('input'));
+    flipped = false; overlay.style.transform = 'scaleX(1)';
+  });
+  document.getElementById('flip').addEventListener('click', () => {
+    flipped = !flipped; overlay.style.transform = flipped ? 'scaleX(-1)' : 'scaleX(1)';
+  });
+
+  overlay.addEventListener('pointerdown', e => {
+    dragging = true;
+    overlay.setPointerCapture(e.pointerId);
+    startX = e.clientX; startY = e.clientY;
+    origLeft = overlay.offsetLeft; origTop = overlay.offsetTop;
+    e.preventDefault();
+  });
+  overlay.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const bounds = stage.getBoundingClientRect();
+    const maxLeft = Math.max(0, bounds.width - overlay.offsetWidth);
+    const maxTop = Math.max(0, bounds.height - overlay.offsetHeight);
+    const nextLeft = Math.min(maxLeft, Math.max(0, origLeft + e.clientX - startX));
+    const nextTop = Math.min(maxTop, Math.max(0, origTop + e.clientY - startY));
+    overlay.style.left = (nextLeft / bounds.width * 100) + '%';
+    overlay.style.top = (nextTop / bounds.height * 100) + '%';
+  });
+  const endDrag = () => { dragging = false; };
+  overlay.addEventListener('pointerup', endDrag);
+  overlay.addEventListener('pointercancel', endDrag);
+
+  window.addEventListener('beforeunload', () => {
+    if (stream) stream.getTracks().forEach(track => track.stop());
+  });
+})();
+</script>
+</body>
+</html>
